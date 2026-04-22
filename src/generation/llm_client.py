@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import os
+import json
+from collections.abc import Iterator
+from urllib import request
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from src.generation.offline_answer import compose_offline_fallback, try_sentence_answer
+from src.generation.prompt_builder import UNKNOWN_FROM_DOCUMENTS
+
+load_dotenv()
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+class LLMClient:
+    """
+    Zero-cost default: if OPENAI_API_KEY is unset or still the placeholder, the app runs
+    in offline mode (extractive natural-language answers when possible).
+
+    To use the OpenAI API (paid), set a real OPENAI_API_KEY and do not set OFFLINE_MODE.
+    """
+
+    def __init__(self) -> None:
+        self.provider = "offline"
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        force_offline = _truthy_env("OFFLINE_MODE")
+        use_ollama = _truthy_env("USE_OLLAMA")
+        placeholder = api_key.lower() in ("", "your_openai_api_key_here", "sk-placeholder")
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.offline = force_offline
+
+        if self.offline:
+            self.model = "offline"
+            self.client = None
+            return
+
+        if use_ollama:
+            self.provider = "ollama"
+            self.model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+            self.client = None
+            return
+
+        self.offline = placeholder
+        if self.offline:
+            self.model = "offline"
+            self.client = None
+            return
+
+        self.provider = "openai"
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        self.client = OpenAI(api_key=api_key)
+
+    def _ollama_generate(self, prompt: str, *, stream: bool) -> str:
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": stream,
+        }
+        req = request.Request(
+            f"{self.ollama_base_url}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8")
+        data = json.loads(body)
+        return str(data.get("response", "")).strip()
+
+    def _offline_from_chunks(self, query: str, chunks: list[dict]) -> str:
+        """Return only a natural-language answer; chunks stay in the pipeline for the UI evidence panel."""
+        if not chunks:
+            return UNKNOWN_FROM_DOCUMENTS
+
+        sentence = try_sentence_answer(query, chunks)
+        if sentence:
+            return sentence.strip()
+
+        fallback = compose_offline_fallback(query, chunks)
+        if fallback:
+            return fallback.strip()
+
+        return UNKNOWN_FROM_DOCUMENTS
+
+    def generate(self, prompt: str, query: str = "", chunks: list[dict] | None = None) -> str:
+        if self.offline:
+            return self._offline_from_chunks(query, chunks or [])
+        if self.provider == "ollama":
+            return self._ollama_generate(prompt, stream=False)
+
+        assert self.client is not None
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = response.choices[0].message.content
+        return (content or "").strip()
+
+    def generate_stream(self, prompt: str) -> Iterator[str]:
+        """Yield decoded token deltas from the chat completions API (API mode only)."""
+        if self.offline:
+            raise RuntimeError("Streaming requires a configured OpenAI API key.")
+        if self.provider == "ollama":
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": True,
+            }
+            req = request.Request(
+                f"{self.ollama_base_url}/api/generate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=300) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    part = json.loads(line)
+                    token = part.get("response")
+                    if token:
+                        yield token
+            return
+        assert self.client is not None
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        )
+        for chunk in stream:
+            choice = chunk.choices[0]
+            if choice.delta and choice.delta.content:
+                yield choice.delta.content
+
+    def pure_llm_answer(self, query: str) -> str:
+        if self.offline:
+            return (
+                f"Question: {query}"
+            )
+        prompt = (
+            "Answer the following user question directly. "
+            "Do not use retrieval.\n\n"
+            f"Question: {query}"
+        )
+        return self.generate(prompt)

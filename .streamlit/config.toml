@@ -1,0 +1,7 @@
+# Base theme (light). The app’s “Dark interface” toggle injects its own CSS on each rerun.
+[theme]
+primaryColor = "#6d28d9"
+backgroundColor = "#f5f7fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#142033"
+font = "sans serif"
