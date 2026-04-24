@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from time import perf_counter
 from pathlib import Path
@@ -38,18 +39,19 @@ def _dynamic_top_k_for_query(query: str, user_top_k: int) -> int:
 
 
 def _token_overlap_ratio(query: str, text: str) -> float:
-    q_terms = {t for t in query.lower().split() if len(t) > 2}
+    q_terms = {t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2}
     if not q_terms:
         return 0.0
-    text_terms = set(text.lower().split())
+    text_terms = set(re.findall(r"[a-z0-9]+", text.lower()))
     return len(q_terms & text_terms) / len(q_terms)
 
 
 def _should_block_out_of_scope(query: str, chunks: list[dict]) -> bool:
+    # Strict policy: only election/budget-domain questions are allowed.
+    if not has_domain_signal(query):
+        return True
     if not chunks:
         return True
-    if has_domain_signal(query):
-        return False
     top_score = float(chunks[0].get("final_score", 0.0))
     best_overlap = max((_token_overlap_ratio(query, str(c.get("text", ""))) for c in chunks[:3]), default=0.0)
     return top_score < 0.40 and best_overlap < 0.15

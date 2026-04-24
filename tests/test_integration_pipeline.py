@@ -99,6 +99,18 @@ def test_out_of_scope_gate_blocks_weak_irrelevant_queries() -> None:
     assert _should_block_out_of_scope("what is the weather in paris", chunks)
 
 
+def test_out_of_scope_gate_blocks_world_cup_question() -> None:
+    chunks = [
+        {
+            "chunk_id": "budget_para_p120_101",
+            "source": "budget_pdf",
+            "text": "The Department will continue workplace inspections and support job placement.",
+            "final_score": 0.95,
+        }
+    ]
+    assert _should_block_out_of_scope("who won the world cup", chunks)
+
+
 def test_out_of_scope_gate_allows_in_domain_query_even_if_short() -> None:
     chunks = [
         {
