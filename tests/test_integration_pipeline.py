@@ -2,7 +2,7 @@ import json
 
 from src.generation.offline_answer import generate_offline_answer
 from src.generation.prompt_builder import UNKNOWN_FROM_DOCUMENTS
-from src.pipeline.rag_pipeline import RAGPipeline
+from src.pipeline.rag_pipeline import OUT_OF_SCOPE_RESPONSE, RAGPipeline, _should_block_out_of_scope
 
 
 class _FakeLLM:
@@ -85,6 +85,54 @@ def test_pipeline_pure_llm_answer_delegates_to_client() -> None:
     pipeline.llm = _PureLLM()
 
     assert pipeline.pure_llm_answer("test q") == "pure: test q"
+
+
+def test_out_of_scope_gate_blocks_weak_irrelevant_queries() -> None:
+    chunks = [
+        {
+            "chunk_id": "budget_0001",
+            "source": "budget_pdf",
+            "text": "Fiscal deficit guidance appears in budget annex tables.",
+            "final_score": 0.12,
+        }
+    ]
+    assert _should_block_out_of_scope("what is the weather in paris", chunks)
+
+
+def test_out_of_scope_gate_allows_in_domain_query_even_if_short() -> None:
+    chunks = [
+        {
+            "chunk_id": "election_0001",
+            "source": "election_csv",
+            "text": "Election record. Year: 2020. New Region: Northern Region. Candidate: Nana Akufo Addo.",
+            "final_score": 0.20,
+        }
+    ]
+    assert not _should_block_out_of_scope("who won election?", chunks)
+
+
+def test_pipeline_answer_uses_out_of_scope_override(monkeypatch, tmp_path) -> None:
+    prep = {
+        "query": "what is football score today",
+        "effective_query": "what is football score today",
+        "query_type": "mixed",
+        "retrieved_chunks": [],
+        "final_prompt": "OUT_OF_SCOPE_QUERY_PATH",
+        "response_override": OUT_OF_SCOPE_RESPONSE,
+        "confidence": "low",
+        "citations": [],
+        "router_path": "out_of_scope_block_path",
+        "retrieval_constraints": {},
+    }
+    pipeline = RAGPipeline.__new__(RAGPipeline)
+    pipeline.log_file = tmp_path / "logs.jsonl"
+    pipeline.llm = _FakeLLM("should-not-be-used")
+
+    monkeypatch.setattr(RAGPipeline, "prepare_retrieval", lambda self, query, top_k=4, prompt_version="v3": prep)
+
+    result = pipeline.answer("what is football score today")
+    assert result["response"] == OUT_OF_SCOPE_RESPONSE
+    assert pipeline.llm.calls == []
 
 
 def test_offline_answer_handles_party_region_vote_query() -> None:

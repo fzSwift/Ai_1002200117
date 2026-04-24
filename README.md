@@ -22,7 +22,9 @@ This project is implemented from scratch in `src/` and does **not** rely on end-
 - **Domain-aware ranking**: election-like queries favor CSV chunks; budget-like queries favor PDF chunks
 - **Grounded offline QA**: no API key required; still returns synthesized answers
 - **Transparent UI**: shows retrieved chunks, scores, effective query, and prompt
-- **Mode flexibility**: supports Offline, OpenAI, and local Ollama generation
+- **Mode flexibility**: supports Offline, OpenAI, Ollama Local, and Ollama Cloud generation
+- **Multi-chunk answer synthesis**: weighted fact voting across retrieved chunks for numeric/comparison answers
+- **Reliability guardrails**: contradiction detection with confidence penalty when evidence conflicts
 
 ---
 
@@ -48,9 +50,10 @@ User query
   -> FAISS retrieval + BM25 retrieval
   -> metadata-aware filtering boost (source/year/region/party)
   -> weighted fusion + domain bonus + lexical rerank
-  -> cross-encoder rerank (top-10 -> top-3)
+  -> cross-encoder rerank (top pool -> requested top-k)
+  -> dynamic top-k by intent (comparison/numeric pull deeper evidence)
   -> dedupe + top-k chunk selection
-  -> answer composer (direct answer + evidence + confidence)
+  -> answer composer (direct answer + evidence + confidence + contradiction penalty)
   -> response generation (offline / Ollama / OpenAI)
   -> JSONL logging with request_id + stage timings
 ```
@@ -87,10 +90,15 @@ The app supports three answer modes:
    - Includes numeric refinement logic (vote/percentage extraction and comparative phrasing)
 
 2. **Ollama local mode (free local model)**
-   - Uses local model served at `OLLAMA_BASE_URL`
+   - Uses local model served at `OLLAMA_BASE_URL` (or `OLLAMA_LOCAL_BASE_URL`)
    - Supports full generation and token streaming
 
-3. **OpenAI API mode**
+3. **Ollama cloud mode**
+   - Uses cloud endpoint at `https://ollama.com` (or `OLLAMA_CLOUD_BASE_URL`)
+   - Requires `OLLAMA_API_KEY` or `OLLAMA_CLOUD_API_KEY`
+   - Can be toggled at runtime from the Streamlit sidebar (`Ollama Local` / `Ollama Cloud`)
+
+4. **OpenAI API mode**
    - Uses `OPENAI_API_KEY`
    - Supports standard chat generation and streaming
 
@@ -114,6 +122,7 @@ Main features:
 - Sources used section with chunk previews
 - A/B panel toggle (RAG answer vs pure LLM answer)
 - Answer mode toggle (`concise`, `detailed`, `examiner`)
+- Ollama target toggle (`Ollama Local` / `Ollama Cloud`) in sidebar
 - Prompt visibility for explainability
 - Light/dark UI and response rendering options
 
@@ -190,6 +199,24 @@ OLLAMA_MODEL=gpt-oss:120b-cloud
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=your_ollama_api_key
 OPENAI_API_KEY=
+```
+
+### Ollama local + cloud dual setup (recommended)
+
+```env
+USE_OLLAMA=1
+
+OLLAMA_LOCAL_BASE_URL=http://127.0.0.1:11434
+OLLAMA_LOCAL_MODEL=llama3.1:8b
+OLLAMA_LOCAL_API_KEY=
+
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+OLLAMA_CLOUD_MODEL=gpt-oss:120b-cloud
+OLLAMA_CLOUD_API_KEY=your_ollama_api_key
+
+# Optional default selection (auto-detected from URL)
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.1:8b
 ```
 
 ### OpenAI mode (paid)
@@ -289,6 +316,7 @@ python -m pytest tests/
 ```
 
 Project currently includes retrieval, chunking, and pipeline integration tests.
+Additional tests validate structured answer composition for numeric/comparison synthesis.
 
 ---
 

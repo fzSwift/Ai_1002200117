@@ -38,6 +38,13 @@ def classify_query(query: str) -> str:
     return "mixed"
 
 
+def has_domain_signal(query: str) -> bool:
+    q = query.lower()
+    election_hits = sum(1 for term in ELECTION_TERMS if term in q)
+    budget_hits = sum(1 for term in BUDGET_TERMS if term in q)
+    return (election_hits + budget_hits) > 0
+
+
 def normalize_scores(scores: list[float]) -> list[float]:
     if not scores:
         return []

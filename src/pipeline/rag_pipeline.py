@@ -20,8 +20,12 @@ from src.preprocessing.clean_pdf import clean_pdf_pages
 from src.routing.query_router import is_structured_numeric_query, parse_structured_constraints
 from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.query_rewrite import rewrite_query
+from src.retrieval.scoring import has_domain_signal
 from src.utils.helpers import DATA_DIR, OUTPUT_DIR, ensure_output_dir
 from src.utils.logger import append_json_log
+
+
+OUT_OF_SCOPE_RESPONSE = "I don't understand that from the provided documents."
 
 
 def _dynamic_top_k_for_query(query: str, user_top_k: int) -> int:
@@ -31,6 +35,24 @@ def _dynamic_top_k_for_query(query: str, user_top_k: int) -> int:
     if any(k in q for k in ("how many", "how much", "total", "number", "votes", "percent", "percentage")):
         return max(user_top_k, 5)
     return max(user_top_k, 4)
+
+
+def _token_overlap_ratio(query: str, text: str) -> float:
+    q_terms = {t for t in query.lower().split() if len(t) > 2}
+    if not q_terms:
+        return 0.0
+    text_terms = set(text.lower().split())
+    return len(q_terms & text_terms) / len(q_terms)
+
+
+def _should_block_out_of_scope(query: str, chunks: list[dict]) -> bool:
+    if not chunks:
+        return True
+    if has_domain_signal(query):
+        return False
+    top_score = float(chunks[0].get("final_score", 0.0))
+    best_overlap = max((_token_overlap_ratio(query, str(c.get("text", ""))) for c in chunks[:3]), default=0.0)
+    return top_score < 0.40 and best_overlap < 0.15
 
 
 class RAGPipeline:
@@ -132,6 +154,19 @@ class RAGPipeline:
             classification_query=q,
         )
         selected_chunks = retrieval_result["retrieved_chunks"]
+        if _should_block_out_of_scope(q, selected_chunks):
+            return {
+                "query": q,
+                "effective_query": effective_query,
+                "query_type": retrieval_result["query_type"],
+                "retrieved_chunks": selected_chunks,
+                "final_prompt": "OUT_OF_SCOPE_QUERY_PATH",
+                "response_override": OUT_OF_SCOPE_RESPONSE,
+                "confidence": "low",
+                "citations": [],
+                "router_path": "out_of_scope_block_path",
+                "retrieval_constraints": retrieval_result.get("constraints", {}),
+            }
         final_prompt = build_prompt(query=q, chunks=selected_chunks, version=prompt_version)
         return {
             "query": q,
