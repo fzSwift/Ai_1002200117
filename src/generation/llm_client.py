@@ -31,9 +31,11 @@ class LLMClient:
         self.provider = "offline"
         api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
         force_offline = _truthy_env("OFFLINE_MODE")
-        use_ollama = _truthy_env("USE_OLLAMA")
+        # Default to Ollama unless explicitly disabled (USE_OLLAMA=0/false/off).
+        use_ollama = os.getenv("USE_OLLAMA", "1").strip().lower() in ("1", "true", "yes", "on")
         placeholder = api_key.lower() in ("", "your_openai_api_key_here", "sk-placeholder")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.ollama_api_key = (os.getenv("OLLAMA_API_KEY") or "").strip()
         self.response_mode = os.getenv("RESPONSE_MODE", "detailed")
         self.offline = force_offline
 
@@ -58,22 +60,28 @@ class LLMClient:
         self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.client = OpenAI(api_key=api_key)
 
+    def _ollama_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.ollama_api_key:
+            headers["Authorization"] = f"Bearer {self.ollama_api_key}"
+        return headers
+
     def _ollama_generate(self, prompt: str, *, stream: bool) -> str:
         payload = {
             "model": self.model,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": stream,
         }
         req = request.Request(
-            f"{self.ollama_base_url}/api/generate",
+            f"{self.ollama_base_url}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._ollama_headers(),
             method="POST",
         )
         with request.urlopen(req, timeout=120) as resp:
             body = resp.read().decode("utf-8")
         data = json.loads(body)
-        return str(data.get("response", "")).strip()
+        return str((data.get("message") or {}).get("content", "")).strip()
 
     def _offline_from_chunks(self, query: str, chunks: list[dict]) -> str:
         """Return only a natural-language answer; chunks stay in the pipeline for the UI evidence panel."""
@@ -126,13 +134,13 @@ class LLMClient:
         if self.provider == "ollama":
             payload = {
                 "model": self.model,
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": prompt}],
                 "stream": True,
             }
             req = request.Request(
-                f"{self.ollama_base_url}/api/generate",
+                f"{self.ollama_base_url}/api/chat",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=self._ollama_headers(),
                 method="POST",
             )
             with request.urlopen(req, timeout=300) as resp:
@@ -141,7 +149,7 @@ class LLMClient:
                     if not line:
                         continue
                     part = json.loads(line)
-                    token = part.get("response")
+                    token = (part.get("message") or {}).get("content")
                     if token:
                         yield token
             return

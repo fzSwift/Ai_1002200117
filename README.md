@@ -178,6 +178,17 @@ OPENAI_API_KEY=
 USE_OLLAMA=1
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_API_KEY=
+OPENAI_API_KEY=
+```
+
+### Ollama cloud mode
+
+```env
+USE_OLLAMA=1
+OLLAMA_MODEL=gpt-oss:120b-cloud
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_API_KEY=your_ollama_api_key
 OPENAI_API_KEY=
 ```
 
