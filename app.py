@@ -57,6 +57,7 @@ def init_session() -> None:
         "response_mode": "detailed",
         "show_ab_panel": False,
         "conversation_summary": "",
+        "ollama_target_mode": "local",
     }
 
     for key, value in defaults.items():
@@ -429,7 +430,13 @@ def extract_direct_answer(text: str) -> str:
 
     for line in lines:
         lower = line.lower()
-        if lower.startswith("direct answer:") or lower.startswith("answer:"):
+        if (
+            lower.startswith("direct answer:")
+            or lower.startswith("answer:")
+            or lower.startswith("comparison result:")
+            or lower.startswith("definition:")
+            or lower.startswith("policy summary:")
+        ):
             return line.split(":", 1)[1].strip()
 
     return text
@@ -591,6 +598,7 @@ def render_sidebar(pipeline: RAGPipeline) -> dict[str, Any]:
     llm_offline = getattr(pipeline.llm, "offline", True)
     llm_provider = getattr(pipeline.llm, "provider", "offline")
     llm_model = getattr(pipeline.llm, "model", "offline")
+    llm_mode = getattr(pipeline.llm, "ollama_mode", "local")
 
     with st.sidebar:
         st.markdown("## 🧠 AcaIntel AI")
@@ -686,14 +694,33 @@ def render_sidebar(pipeline: RAGPipeline) -> dict[str, Any]:
 
         st.markdown("### System Status")
 
+        if llm_provider == "ollama" and not llm_offline:
+            mode_options = ["local", "cloud"]
+            current_mode = st.session_state.get("ollama_target_mode", llm_mode)
+            if current_mode not in mode_options:
+                current_mode = llm_mode if llm_mode in mode_options else "local"
+            selected_mode = st.radio(
+                "Ollama target",
+                options=mode_options,
+                index=mode_options.index(current_mode),
+                format_func=lambda m: f"Ollama {m.title()}",
+                horizontal=True,
+            )
+            st.session_state.ollama_target_mode = selected_mode
+            if selected_mode != llm_mode:
+                pipeline.llm.set_ollama_mode(selected_mode)
+                llm_mode = selected_mode
+                llm_model = getattr(pipeline.llm, "model", llm_model)
+
         if llm_offline:
             st.markdown(
                 '<span class="status-badge">Offline Mode · $0</span>',
                 unsafe_allow_html=True,
             )
         elif llm_provider == "ollama":
+            target_label = "Ollama Cloud" if llm_mode == "cloud" else "Ollama Local"
             st.markdown(
-                f'<span class="status-badge">Ollama is working · Ollama Local · {llm_model}</span>',
+                f'<span class="status-badge">Ollama is working · {target_label} · {llm_model}</span>',
                 unsafe_allow_html=True,
             )
         else:

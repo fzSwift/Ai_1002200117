@@ -24,6 +24,15 @@ from src.utils.helpers import DATA_DIR, OUTPUT_DIR, ensure_output_dir
 from src.utils.logger import append_json_log
 
 
+def _dynamic_top_k_for_query(query: str, user_top_k: int) -> int:
+    q = query.lower()
+    if any(k in q for k in ("compare", "difference", "higher", "lower", "versus", "vs")):
+        return max(user_top_k, 6)
+    if any(k in q for k in ("how many", "how much", "total", "number", "votes", "percent", "percentage")):
+        return max(user_top_k, 5)
+    return max(user_top_k, 4)
+
+
 class RAGPipeline:
     def __init__(self) -> None:
         ensure_output_dir()
@@ -116,9 +125,10 @@ class RAGPipeline:
             }
 
         effective_query = rewrite_query(q)
+        effective_top_k = _dynamic_top_k_for_query(q, top_k)
         retrieval_result = self.retriever.retrieve(
             query=effective_query,
-            top_k=top_k,
+            top_k=effective_top_k,
             classification_query=q,
         )
         selected_chunks = retrieval_result["retrieved_chunks"]

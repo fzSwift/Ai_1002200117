@@ -36,6 +36,12 @@ class LLMClient:
         placeholder = api_key.lower() in ("", "your_openai_api_key_here", "sk-placeholder")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
         self.ollama_api_key = (os.getenv("OLLAMA_API_KEY") or "").strip()
+        self.ollama_local_base_url = os.getenv("OLLAMA_LOCAL_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.ollama_cloud_base_url = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com").rstrip("/")
+        self.ollama_local_model = os.getenv("OLLAMA_LOCAL_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
+        self.ollama_cloud_model = os.getenv("OLLAMA_CLOUD_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
+        self.ollama_cloud_api_key = (os.getenv("OLLAMA_CLOUD_API_KEY") or self.ollama_api_key).strip()
+        self.ollama_mode = "cloud" if "ollama.com" in self.ollama_base_url.lower() else "local"
         self.response_mode = os.getenv("RESPONSE_MODE", "detailed")
         self.offline = force_offline
 
@@ -48,6 +54,7 @@ class LLMClient:
             self.provider = "ollama"
             self.model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
             self.client = None
+            self.set_ollama_mode(self.ollama_mode)
             return
 
         self.offline = placeholder
@@ -59,6 +66,21 @@ class LLMClient:
         self.provider = "openai"
         self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.client = OpenAI(api_key=api_key)
+
+    def set_ollama_mode(self, mode: str) -> None:
+        target = (mode or "").strip().lower()
+        if target not in {"local", "cloud"}:
+            target = "local"
+        self.ollama_mode = target
+        if target == "cloud":
+            self.ollama_base_url = self.ollama_cloud_base_url
+            self.model = self.ollama_cloud_model
+            self.ollama_api_key = self.ollama_cloud_api_key
+        else:
+            self.ollama_base_url = self.ollama_local_base_url
+            self.model = self.ollama_local_model
+            # Local Ollama usually does not require auth; keep it empty unless explicitly set.
+            self.ollama_api_key = (os.getenv("OLLAMA_LOCAL_API_KEY") or "").strip()
 
     def _ollama_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

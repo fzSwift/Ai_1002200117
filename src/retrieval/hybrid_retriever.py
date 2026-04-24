@@ -161,8 +161,8 @@ class HybridRetriever:
 
         ranked_chunks.sort(key=lambda c: c["final_score"], reverse=True)
         deduped = self._dedupe(ranked_chunks)
-        rerank_pool = deduped[:10]
-        reranked = self._cross_rerank(query, rerank_pool, keep_top_k=min(3, top_k))
+        rerank_pool = deduped[: max(10, top_k)]
+        reranked = self._cross_rerank(query, rerank_pool, keep_top_k=min(len(rerank_pool), top_k))
         tail_needed = max(0, top_k - len(reranked))
         if tail_needed:
             selected_ids = {c.get("chunk_id") for c in reranked}
