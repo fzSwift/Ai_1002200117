@@ -1,0 +1,26 @@
+[
+  {
+    "id": "bnk_001",
+    "query": "What is the NPP vote in the Northern Region?",
+    "expected_chunk_id_prefix": "election_",
+    "expected_numeric_min": 1000,
+    "expect_abstain": false
+  },
+  {
+    "id": "bnk_002",
+    "query": "What is the total nationwide turnout in the election dataset?",
+    "expected_phrase": "not stored as a single row",
+    "expect_abstain": false
+  },
+  {
+    "id": "bnk_003",
+    "query": "What does the budget say about inflation?",
+    "expected_chunk_id_prefix": "budget_para_",
+    "expect_abstain": false
+  },
+  {
+    "id": "bnk_004",
+    "query": "Tell me about 1900 election data in this dataset.",
+    "expect_abstain": true
+  }
+]

@@ -449,6 +449,43 @@ def _init_session() -> None:
         st.session_state.chat_archives = []
     if "typing_speed" not in st.session_state:
         st.session_state.typing_speed = 0.008
+    if "response_mode" not in st.session_state:
+        st.session_state.response_mode = "detailed"
+    if "show_ab_panel" not in st.session_state:
+        st.session_state.show_ab_panel = False
+    if "conversation_summary" not in st.session_state:
+        st.session_state.conversation_summary = ""
+
+
+def _compress_history_if_needed() -> None:
+    msgs = st.session_state.get("messages") or []
+    if len(msgs) < 16:
+        return
+    pairs: list[str] = []
+    for m in msgs[-8:]:
+        role = "User" if m.get("role") == "user" else "Assistant"
+        content = str(m.get("content", "")).strip().replace("\n", " ")
+        if content:
+            pairs.append(f"{role}: {content[:120]}")
+    st.session_state.conversation_summary = " | ".join(pairs[:8])[:1200]
+    st.session_state.messages = msgs[-10:]
+
+
+def _render_sources_used(result: dict[str, Any]) -> None:
+    chunks = result.get("retrieved_chunks", [])
+    if not chunks:
+        return
+    st.markdown("**Sources used**")
+    for c in chunks[:3]:
+        label = f"{c.get('chunk_id', 'chunk')} ({c.get('source', 'unknown')})"
+        with st.expander(label, expanded=False):
+            st.write((c.get("text", "") or "")[:450] + ("..." if len(c.get("text", "")) > 450 else ""))
+
+
+def _render_confidence_badge(result: dict[str, Any]) -> None:
+    conf = str(result.get("confidence", "medium")).lower()
+    emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "🟡")
+    st.caption(f"{emoji} Confidence: {conf}")
 
 
 def _first_user_title(messages: list[dict[str, Any]]) -> str:
@@ -732,6 +769,12 @@ def main() -> None:
             }[x],
         )
         show_debug = st.toggle("Show extra debug JSON", value=False)
+        st.session_state.response_mode = st.selectbox(
+            "Answer mode",
+            ["concise", "detailed", "examiner"],
+            index=["concise", "detailed", "examiner"].index(st.session_state.response_mode),
+        )
+        st.session_state.show_ab_panel = st.toggle("Show RAG vs Pure LLM panel", value=st.session_state.show_ab_panel)
         use_api_stream = st.toggle(
             "Stream from API",
             value=False,
@@ -764,6 +807,9 @@ def main() -> None:
 
         st.divider()
         st.caption("Tip: Use **New chat** to save this thread to Past conversations, then start fresh.")
+        if st.session_state.conversation_summary:
+            st.markdown("**Session memory summary**")
+            st.caption(st.session_state.conversation_summary)
 
     _hero()
 
@@ -785,6 +831,8 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
                 if result is not None:
+                    _render_confidence_badge(result)
+                    _render_sources_used(result)
                     _render_evidence_panel(result, show_debug=show_debug)
 
     if not st.session_state.messages:
@@ -816,6 +864,7 @@ def main() -> None:
                 top_k=top_k,
                 prompt_version=prompt_version,
             )
+            pipeline.llm.response_mode = st.session_state.response_mode
         except Exception as err:
             error_text = _user_safe_error(
                 "I could not retrieve evidence for that question.",
@@ -880,12 +929,24 @@ def main() -> None:
                     result = {"response": error_text}
 
                 if result.get("retrieved_chunks") is not None and result.get("final_prompt") is not None:
+                    _render_confidence_badge(result)
+                    _render_sources_used(result)
                     _render_evidence_panel(result, show_debug=show_debug)
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": result["response"]}
             if "retrieved_chunks" in result:
                 assistant_msg["result"] = result
             st.session_state.messages.append(assistant_msg)
+            _compress_history_if_needed()
+
+            if st.session_state.show_ab_panel:
+                with st.expander("RAG vs Pure LLM", expanded=False):
+                    pure = pipeline.pure_llm_answer(prompt)
+                    st.markdown("**RAG answer**")
+                    st.write(result["response"])
+                    st.markdown("**Pure LLM answer (no retrieval)**")
+                    st.write(pure)
+                    st.caption("Warning: Pure LLM can hallucinate when source context is missing.")
 
     st.markdown(
         """

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import uuid
+from time import perf_counter
 from pathlib import Path
 
+from src.data.structured_store import StructuredElectionStore
+from src.generation.answer_composer import compose_structured_answer
 from src.generation.llm_client import LLMClient
 from src.generation.prompt_builder import build_prompt
 from src.ingestion.load_csv import load_election_csv
@@ -13,6 +17,7 @@ from src.preprocessing.chunking import (
 )
 from src.preprocessing.clean_csv import clean_election_df
 from src.preprocessing.clean_pdf import clean_pdf_pages
+from src.routing.query_router import is_structured_numeric_query, parse_structured_constraints
 from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.query_rewrite import rewrite_query
 from src.utils.helpers import DATA_DIR, OUTPUT_DIR, ensure_output_dir
@@ -25,6 +30,8 @@ class RAGPipeline:
         self.data_dir = DATA_DIR
         self.output_dir = OUTPUT_DIR
         self.log_file = self.output_dir / "logs.jsonl"
+        self.cache_dir = self.output_dir / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         csv_path = self.data_dir / "Ghana_Election_Result.csv"
         pdf_path = self.data_dir / "2025_budget.pdf"
@@ -38,12 +45,76 @@ class RAGPipeline:
         self.pdf_paragraph_chunks = chunk_pdf_paragraph_aware(pdf_pages)
 
         self.all_chunks = self.election_chunks + self.pdf_paragraph_chunks
-        self.retriever = HybridRetriever(self.all_chunks)
+        self.retriever = HybridRetriever(self.all_chunks, cache_dir=self.cache_dir)
         self.llm = LLMClient()
+        self.structured_store = StructuredElectionStore(self.output_dir / "election_store.sqlite3")
+        self.structured_store.build_from_df(election_df)
+
+    def _structured_route(self, query: str) -> dict | None:
+        if not is_structured_numeric_query(query):
+            return None
+        constraints = parse_structured_constraints(query)
+        rows = self.structured_store.query_votes(
+            party=constraints.get("party"),
+            region=constraints.get("region"),
+            year=constraints.get("year"),
+            limit=3,
+        )
+        if not rows:
+            return None
+
+        top = rows[0]
+        chunk_id = f"election_{int(top['row_index']):04d}"
+        answer = (
+            f"Direct answer: {top.get('Party','')} in {top.get('new_region') or top.get('old_region')} has "
+            f"{int(top.get('Votes', 0)):,} votes for {top.get('Candidate')} in {top.get('Year')} "
+            f"({top.get('votes_pct')}). [{chunk_id}]"
+        )
+        evidence = (
+            f"Evidence: Candidate={top.get('Candidate')}, Party={top.get('Party')}, Region={top.get('new_region')}, "
+            f"Votes={int(top.get('Votes', 0)):,}. [{chunk_id}]"
+        )
+        response = f"{answer}\n{evidence}\nConfidence: high."
+
+        retrieved_chunks: list[dict] = []
+        for row in rows:
+            cid = f"election_{int(row['row_index']):04d}"
+            match = next((c for c in self.election_chunks if c.get("chunk_id") == cid), None)
+            if match:
+                chunk = dict(match)
+                chunk["final_score"] = 1.0
+                chunk["structured_match"] = True
+                retrieved_chunks.append(chunk)
+
+        return {
+            "query_type": "election",
+            "retrieved_chunks": retrieved_chunks,
+            "final_prompt": "STRUCTURED_QUERY_PATH",
+            "effective_query": query,
+            "response_override": response,
+            "confidence": "high",
+            "citations": [c["chunk_id"] for c in retrieved_chunks],
+            "router_path": "structured_query_path",
+        }
 
     def prepare_retrieval(self, query: str, top_k: int = 4, prompt_version: str = "v3") -> dict:
         """Run query rewrite + hybrid retrieval + prompt build. Used by `answer` and the Streamlit stream path."""
         q = query.strip()
+        route = self._structured_route(q)
+        if route is not None:
+            return {
+                "query": q,
+                "effective_query": route["effective_query"],
+                "query_type": route["query_type"],
+                "retrieved_chunks": route["retrieved_chunks"][:top_k],
+                "final_prompt": route["final_prompt"],
+                "response_override": route["response_override"],
+                "confidence": route["confidence"],
+                "citations": route["citations"],
+                "router_path": route["router_path"],
+                "retrieval_constraints": {},
+            }
+
         effective_query = rewrite_query(q)
         retrieval_result = self.retriever.retrieve(
             query=effective_query,
@@ -58,10 +129,16 @@ class RAGPipeline:
             "query_type": retrieval_result["query_type"],
             "retrieved_chunks": selected_chunks,
             "final_prompt": final_prompt,
+            "retrieval_constraints": retrieval_result.get("constraints", {}),
+            "router_path": "rag_narrative_path",
         }
 
-    def finalize_answer(self, prep: dict, response: str) -> dict:
+    def finalize_answer(self, prep: dict, response: str, *, timings: dict[str, float] | None = None, request_id: str | None = None) -> dict:
+        composed = compose_structured_answer(prep["query"], prep["retrieved_chunks"], mode=getattr(self.llm, "response_mode", "detailed"))
+        confidence = prep.get("confidence", composed.confidence)
+        citations = prep.get("citations", composed.citations)
         payload = {
+            "request_id": request_id or str(uuid.uuid4()),
             "query": prep["query"],
             "effective_query": prep["effective_query"],
             "query_type": prep["query_type"],
@@ -69,18 +146,50 @@ class RAGPipeline:
             "retrieved_chunks": prep["retrieved_chunks"],
             "final_prompt": prep["final_prompt"],
             "response": response,
+            "response_intent": composed.intent,
+            "confidence": confidence,
+            "citations": citations,
+            "router_path": prep.get("router_path", "rag_narrative_path"),
+            "retrieval_constraints": prep.get("retrieval_constraints", {}),
+            "timings_ms": timings or {},
         }
         log_path = append_json_log(self.log_file, payload)
         return {**payload, "log_path": log_path}
 
     def answer(self, query: str, top_k: int = 4, prompt_version: str = "v3") -> dict:
+        t0 = perf_counter()
+        request_id = str(uuid.uuid4())
         prep = self.prepare_retrieval(query, top_k=top_k, prompt_version=prompt_version)
+        t1 = perf_counter()
+        if prep.get("response_override"):
+            return self.finalize_answer(
+                prep,
+                prep["response_override"],
+                timings={
+                    "rewrite_retrieve_ms": round((t1 - t0) * 1000, 2),
+                    "generate_ms": 0.0,
+                    "total_ms": round((perf_counter() - t0) * 1000, 2),
+                },
+                request_id=request_id,
+            )
+
+        g0 = perf_counter()
         response = self.llm.generate(
             prep["final_prompt"],
             query=prep["query"],
             chunks=prep["retrieved_chunks"],
         )
-        return self.finalize_answer(prep, response)
+        g1 = perf_counter()
+        return self.finalize_answer(
+            prep,
+            response,
+            timings={
+                "rewrite_retrieve_ms": round((t1 - t0) * 1000, 2),
+                "generate_ms": round((g1 - g0) * 1000, 2),
+                "total_ms": round((g1 - t0) * 1000, 2),
+            },
+            request_id=request_id,
+        )
 
     def pure_llm_answer(self, query: str) -> str:
         return self.llm.pure_llm_answer(query)

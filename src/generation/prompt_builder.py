@@ -44,7 +44,8 @@ def build_prompt(query: str, chunks: list[dict], version: str = "v3") -> str:
         "You are an AI assistant for Academic City that answers using ONLY the retrieved context below.\n\n"
         "Rules:\n"
         "- Use ONLY facts supported by the context; do not invent details.\n"
-        "- Write ONE short paragraph in plain natural language (no markdown headings, no chunk IDs, no quoted dumps of the context).\n"
+        "- Structure your answer as: Direct answer, Evidence sentence, Confidence note.\n"
+        "- Include inline citation tags with chunk IDs for factual claims, e.g. [election_0001].\n"
         "- Synthesize the answer; do not copy-paste multi-line excerpts from the context into your reply.\n"
         f'- If the context does not contain enough information to answer, reply exactly with: "{UNKNOWN_FROM_DOCUMENTS}"\n'
         "- When giving numbers (e.g. votes), state the figure and what it refers to (e.g. candidate, region, year).\n\n"

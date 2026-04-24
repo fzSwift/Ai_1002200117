@@ -22,6 +22,12 @@ def rewrite_query(raw: str) -> str:
         tails.append("National Democratic Congress")
     if re.search(r"\bcpp\b", ql) and "convention people's party" not in ql:
         tails.append("CPP Convention People's Party")
+    if re.search(r"\bpnc\b", ql) and "people's national convention" not in ql:
+        tails.append("PNC People's National Convention")
+    if "nothen" in ql:
+        tails.append("Northern Region")
+    if "accraa" in ql:
+        tails.append("Greater Accra Region")
 
     if any(
         w in ql
@@ -42,6 +48,18 @@ def rewrite_query(raw: str) -> str:
     if any(w in ql for w in ("budget", "fiscal", "revenue", "expenditure", "allocation")):
         if "2025" not in ql:
             tails.append("2025 Ghana budget")
+
+    region_aliases = {
+        "northern": "Northern Region",
+        "savannah": "Savannah Region",
+        "north east": "North East Region",
+        "upper east": "Upper East Region",
+        "upper west": "Upper West Region",
+        "greater accra": "Greater Accra Region",
+    }
+    for alias, canonical in region_aliases.items():
+        if alias in ql and canonical.lower() not in ql:
+            tails.append(canonical)
 
     if not tails:
         return q

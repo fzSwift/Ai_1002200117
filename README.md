@@ -42,14 +42,17 @@ This project is implemented from scratch in `src/` and does **not** rely on end-
 
 ```text
 User query
-  -> query rewrite
+  -> query rewrite + alias normalization
   -> query classification (election / budget / mixed)
+  -> intent router (structured numeric path vs narrative RAG path)
   -> FAISS retrieval + BM25 retrieval
+  -> metadata-aware filtering boost (source/year/region/party)
   -> weighted fusion + domain bonus + lexical rerank
+  -> cross-encoder rerank (top-10 -> top-3)
   -> dedupe + top-k chunk selection
-  -> prompt construction
+  -> answer composer (direct answer + evidence + confidence)
   -> response generation (offline / Ollama / OpenAI)
-  -> JSONL logging
+  -> JSONL logging with request_id + stage timings
 ```
 
 Fusion rule:
@@ -107,6 +110,10 @@ Main features:
 - New chat + past conversation archive
 - Export current thread (`.md` and `.json`)
 - Evidence panel with retrieved chunks and scoring details
+- Confidence indicator (low/medium/high)
+- Sources used section with chunk previews
+- A/B panel toggle (RAG answer vs pure LLM answer)
+- Answer mode toggle (`concise`, `detailed`, `examiner`)
 - Prompt visibility for explainability
 - Light/dark UI and response rendering options
 
@@ -214,6 +221,7 @@ python -m src.evaluation.run_evaluation
 ```
 
 Output: `outputs/evaluation_results.json`
+Benchmark metrics: `outputs/benchmark_metrics.json`
 
 Key fields include:
 - `rag_answer`
@@ -222,8 +230,21 @@ Key fields include:
 - `retrieved_chunk_ids`
 - `effective_query`
 - `abstention_detected`
+- `confidence`
+- `citations`
+- `timings_ms`
 
 Use manual rubric columns in the output JSON for final project scoring notes.
+
+Regression benchmark:
+
+- Benchmark dataset: `evaluation/benchmarks/core_benchmark.json`
+- Metrics tracked:
+  - exact match
+  - numeric accuracy
+  - abstention correctness
+  - citation precision
+- CI blocks regressions if key thresholds drop.
 
 ---
 
@@ -232,7 +253,19 @@ Use manual rubric columns in the output JSON for final project scoring notes.
 - Runtime logs: `outputs/logs.jsonl` (append-only JSON lines)
 - Evaluation results: `outputs/evaluation_results.json`
 
-Each log entry includes query, effective query, retrieved chunks, prompt, response, and timestamp.
+Each log entry includes query, effective query, retrieved chunks, prompt, response, confidence, citations, request id, stage timings, and timestamp.
+
+---
+
+## Build and Cache Indexes
+
+To prebuild retrieval artifacts (FAISS index, embeddings cache, structured election store):
+
+```bash
+python build_index.py
+```
+
+This reduces cold-start overhead in deployed environments.
 
 ---
 
@@ -245,6 +278,59 @@ python -m pytest tests/
 ```
 
 Project currently includes retrieval, chunking, and pipeline integration tests.
+
+---
+
+## Deploy on Streamlit Community Cloud
+
+### 1) Push code to GitHub
+
+Your repo is already on GitHub:
+
+- `https://github.com/fzSwift/Ai_1002200117`
+
+### 2) Create the app on Streamlit
+
+1. Go to [Streamlit Community Cloud](https://share.streamlit.io/).
+2. Click **New app**.
+3. Select:
+   - **Repository**: `fzSwift/Ai_1002200117`
+   - **Branch**: `main`
+   - **Main file path**: `app.py`
+4. Click **Deploy**.
+
+### 3) Configure Secrets (recommended)
+
+In Streamlit app settings, open **Secrets** and add only what you need.
+
+Offline-only mode:
+
+```toml
+OFFLINE_MODE = "1"
+OPENAI_API_KEY = ""
+```
+
+OpenAI mode:
+
+```toml
+OPENAI_API_KEY = "sk-..."
+OPENAI_MODEL = "gpt-4.1-mini"
+```
+
+Important:
+- Do **not** use Ollama mode on Streamlit Cloud (`USE_OLLAMA=1`) because there is no local Ollama server in that environment.
+- `runtime.txt` is pinned to Python 3.11 for package compatibility (FAISS/sentence-transformers).
+
+### 4) Redeploy after updates
+
+- Push changes to `main` and Streamlit redeploys automatically.
+- You can also trigger a manual reboot/redeploy from the app settings.
+
+### 5) Common deployment fixes
+
+- If build fails, check **Manage app -> Logs** first.
+- If memory is tight, reduce retrieval `top_k` in UI defaults and avoid unnecessary large model behavior.
+- Keep secrets only in Streamlit Secrets, not in `.env` committed files.
 
 ---
 

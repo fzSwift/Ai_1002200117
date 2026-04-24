@@ -5,3 +5,6 @@ __pycache__/
 .env
 outputs/logs.json
 outputs/logs.jsonl
+outputs/*.json
+outputs/cache/
+outputs/

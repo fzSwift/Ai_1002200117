@@ -8,6 +8,7 @@ from urllib import request
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from src.generation.answer_composer import compose_structured_answer
 from src.generation.offline_answer import compose_offline_fallback, try_sentence_answer
 from src.generation.prompt_builder import UNKNOWN_FROM_DOCUMENTS
 
@@ -33,6 +34,7 @@ class LLMClient:
         use_ollama = _truthy_env("USE_OLLAMA")
         placeholder = api_key.lower() in ("", "your_openai_api_key_here", "sk-placeholder")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.response_mode = os.getenv("RESPONSE_MODE", "detailed")
         self.offline = force_offline
 
         if self.offline:
@@ -78,6 +80,10 @@ class LLMClient:
         if not chunks:
             return UNKNOWN_FROM_DOCUMENTS
 
+        composed = compose_structured_answer(query, chunks, mode=self.response_mode)
+        if composed.text and UNKNOWN_FROM_DOCUMENTS not in composed.text:
+            return composed.text
+
         sentence = try_sentence_answer(query, chunks)
         if sentence:
             return sentence.strip()
@@ -92,15 +98,26 @@ class LLMClient:
         if self.offline:
             return self._offline_from_chunks(query, chunks or [])
         if self.provider == "ollama":
-            return self._ollama_generate(prompt, stream=False)
+            try:
+                return self._ollama_generate(prompt, stream=False)
+            except Exception:
+                return self._offline_from_chunks(query, chunks or [])
 
-        assert self.client is not None
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = response.choices[0].message.content
-        return (content or "").strip()
+        try:
+            assert self.client is not None
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = response.choices[0].message.content
+            return (content or "").strip()
+        except Exception:
+            if os.getenv("USE_OLLAMA_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on"):
+                try:
+                    return self._ollama_generate(prompt, stream=False)
+                except Exception:
+                    return self._offline_from_chunks(query, chunks or [])
+            return self._offline_from_chunks(query, chunks or [])
 
     def generate_stream(self, prompt: str) -> Iterator[str]:
         """Yield decoded token deltas from the chat completions API (API mode only)."""
